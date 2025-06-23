@@ -102,10 +102,21 @@ func OauthCallbackHandler(c *gin.Context) {
 		return
 	}
 
-	cookieStr := "__did_ddy__dick__l_e__er__prod=" + tokenStr +
-		"; Path=/; Domain=.localhost:3000; Max-Age=86400; HttpOnly; Secure; SameSite=Lax"
-	c.Header("Set-Cookie", cookieStr)
-	c.Redirect(http.StatusPermanentRedirect, configs.AppConfig.DashboardURL)
+	// cookieStr := "__did_ddy__dick__l_e__er__prod=" + tokenStr +
+	// 	"; Path=/; Domain=.localhost:3000; Max-Age=86400; HttpOnly; Secure; SameSite=Lax"
+	// c.Header("Set-Cookie", cookieStr)
+	// c.Redirect(http.StatusPermanentRedirect, configs.AppConfig.DashboardURL)
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"user": gin.H{
+			"id":       user.ID,
+			"email":    user.Email,
+			"name":     user.Name,
+			"avatar":   user.Avatar,
+			"provider": user.Provider,
+			"token":    tokenStr,
+		},
+	})
 }
 
 func LogoutHandler(c *gin.Context) {

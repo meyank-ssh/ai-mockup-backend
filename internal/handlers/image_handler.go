@@ -1,9 +1,14 @@
 package handlers
 
 import (
-	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"log"
 	"net/http"
 	"time"
+
+	"google.golang.org/genai"
 
 	"ai-mockup/internal/models"
 	"ai-mockup/repository"
@@ -11,10 +16,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// GenerateResponse defines the structure for the API response returning the image URL.
 type GenerateResponse struct {
 	ImageURL string `json:"image_url"`
 }
 
+// GenerateImageHandler handles the text-to-image generation request.
+// It expects a POST request with form-data containing a "prompt" field.
 func GenerateImageHandler(c *gin.Context) {
 	// Parse the prompt from the form-data
 	prompt := c.PostForm("prompt")
@@ -23,44 +31,27 @@ func GenerateImageHandler(c *gin.Context) {
 		return
 	}
 
-	// Parse the file from the form-data
-	file, err := c.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File is required"})
-		return
-	}
+	// Add a system prompt to guide the image generation
+	systemPrompt := "You are an AI that generates high-quality, creative images based on user prompts. "
+	finalPrompt := systemPrompt + prompt
 
-	// Open the file and read its content
-	fileContent, err := file.Open()
+	// Call the Gemini/Imagen API to generate the image
+	imageURL, err := callImagenToGenerateImage(finalPrompt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
-		return
-	}
-	defer fileContent.Close()
-
-	// Read the file content into a byte array
-	var fileBuffer bytes.Buffer
-	if _, err := fileBuffer.ReadFrom(fileContent); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process file"})
-		return
-	}
-
-	// Call OpenAI API (or other AI service) to generate the image
-	imageURL, err := callOpenAIWithFile(fileBuffer.Bytes(), prompt)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image"})
+		log.Printf("Error generating image: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image", "details": err.Error()})
 		return
 	}
 
 	// Get the user ID from the context (set by AuthMiddleware)
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: user ID not found in context. AuthMiddleware might be missing or not setting 'user_id'."})
 		return
 	}
 	userID, ok := userIDVal.(uint)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID in context"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID in context: type assertion failed. Expected 'uint'."})
 		return
 	}
 
@@ -72,22 +63,65 @@ func GenerateImageHandler(c *gin.Context) {
 		CreatedAt: time.Now(),
 	}
 	if err := repository.SaveImage(image); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save image"})
-		return
+		log.Printf("Warning: Failed to save image metadata for user %d: %v", userID, err)
 	}
 
 	// Update usage count
 	if err := repository.IncrementUsage(userID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update usage"})
-		return
+		log.Printf("Warning: Failed to update usage for user %d: %v", userID, err)
 	}
 
 	// Return the generated image URL
 	c.JSON(http.StatusOK, GenerateResponse{ImageURL: imageURL})
 }
 
-// Mock function to call OpenAI API with file content and prompt (replace with actual implementation)
-func callOpenAIWithFile(fileContent []byte, prompt string) (string, error) {
-	// Simulate OpenAI API call
-	return "https://example.com/generated-image.png", nil
+// callImagenToGenerateImage uses the Google Generative AI SDK to generate an image
+// using the Gemini/Imagen model.
+func callImagenToGenerateImage(prompt string) (string, error) {
+	// Create a context
+	ctx := context.Background()
+
+	// Initialize the Generative AI client
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  "AIzaSyB2t-cGS-7CIkPFLmQCTQvum2A2ZHs8y64",
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create Gemini client: %w", err)
+	}
+
+	// Configure the request for image generation
+	config := &genai.GenerateContentConfig{
+		ResponseModalities: []string{"IMAGE", "TEXT"}, // Request both image and text responses
+	}
+
+	// Call the Gemini/Imagen model to generate the image
+	result, err := client.Models.GenerateContent(
+		ctx,
+		"gemini-2.0-flash-preview-image-generation", // Model name for image generation
+		genai.Text(prompt),
+		config,
+	)
+	if err != nil {
+		return "", fmt.Errorf("error calling Gemini API: %w", err)
+	}
+
+	// Process the response
+	for _, part := range result.Candidates[0].Content.Parts {
+		if part.InlineData != nil {
+			// Extract the image bytes
+			imageBytes := part.InlineData.Data
+
+			// Encode the image as a Base64 data URI
+			imageMIMEType := "image/png" // Assuming PNG format
+			encodedImage := base64.StdEncoding.EncodeToString(imageBytes)
+			dataURI := fmt.Sprintf("data:%s;base64,%s", imageMIMEType, encodedImage)
+
+			// Return the Base64-encoded image as a data URI
+			return dataURI, nil
+		}
+	}
+
+	// If no image was generated, return an error
+	return "", fmt.Errorf("no image generated by Gemini API")
 }

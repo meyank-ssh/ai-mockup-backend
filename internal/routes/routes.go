@@ -19,6 +19,7 @@ func SetupRoutes(router *gin.Engine) {
 		api.GET("/health", handlers.HealthHandler)
 		api.GET("/session", middleware.AuthMiddleware(), handlers.SessionHandler)
 		api.GET("/usage", middleware.AuthMiddleware(), handlers.GetUsageHandler)
+		api.POST("/generate", middleware.AuthMiddleware(), handlers.GenerateImageHandler)
 	}
 	auth := api.Group("/auth")
 	{
