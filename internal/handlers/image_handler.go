@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"google.golang.org/genai"
@@ -22,7 +23,7 @@ type GenerateResponse struct {
 }
 
 // GenerateImageHandler handles the text-to-image generation request.
-// It expects a POST request with form-data containing a "prompt" field.
+// It expects a POST request with form-data containing a "prompt" field and an optional "image" file.
 func GenerateImageHandler(c *gin.Context) {
 	// Parse the prompt from the form-data
 	prompt := c.PostForm("prompt")
@@ -31,12 +32,27 @@ func GenerateImageHandler(c *gin.Context) {
 		return
 	}
 
+	// Handle the uploaded image file (optional)
+	file, err := c.FormFile("image")
+	var uploadedImagePath string
+	if err == nil {
+		// Save the uploaded file to a temporary location
+		uploadedImagePath = "./uploads/" + file.Filename
+		if err := c.SaveUploadedFile(file, uploadedImagePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save uploaded image", "details": err.Error()})
+			return
+		}
+		log.Printf("Uploaded image saved to: %s", uploadedImagePath)
+	} else {
+		log.Printf("No image uploaded: proceeding with prompt only")
+	}
+
 	// Add a system prompt to guide the image generation
 	systemPrompt := "You are an AI that generates high-quality, creative images based on user prompts. "
 	finalPrompt := systemPrompt + prompt
 
 	// Call the Gemini/Imagen API to generate the image
-	imageURL, err := callImagenToGenerateImage(finalPrompt)
+	imageURL, err := callImagenToGenerateImage(finalPrompt, uploadedImagePath)
 	if err != nil {
 		log.Printf("Error generating image: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate image", "details": err.Error()})
@@ -76,8 +92,8 @@ func GenerateImageHandler(c *gin.Context) {
 }
 
 // callImagenToGenerateImage uses the Google Generative AI SDK to generate an image
-// using the Gemini/Imagen model.
-func callImagenToGenerateImage(prompt string) (string, error) {
+// using the Gemini/Imagen model. It optionally uses an uploaded image file.
+func callImagenToGenerateImage(prompt string, imagePath string) (string, error) {
 	// Create a context
 	ctx := context.Background()
 
@@ -93,6 +109,16 @@ func callImagenToGenerateImage(prompt string) (string, error) {
 	// Configure the request for image generation
 	config := &genai.GenerateContentConfig{
 		ResponseModalities: []string{"IMAGE", "TEXT"}, // Request both image and text responses
+	}
+
+	// If an image file is uploaded, include it in the request
+	if imagePath != "" {
+		imageBytes, err := os.ReadFile(imagePath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read uploaded image file: %w", err)
+		}
+		encodedImage := base64.StdEncoding.EncodeToString(imageBytes)
+		prompt += fmt.Sprintf("\nAttached image: data:image/png;base64,%s", encodedImage)
 	}
 
 	// Call the Gemini/Imagen model to generate the image
